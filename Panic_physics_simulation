@@ -1,0 +1,337 @@
+import numpy as np
+import matplotlib.pyplot as plt
+import matplotlib.animation as animation
+import random
+import json
+
+# This software is based on the studies presented in the paper Simulating dynamical features of escape panic,
+# by Dirk Helbing, Illés Farkas & Tamás Vicsek.
+
+# The software simulates N actors exiting a room of fixed dimensions through a door. 
+# The code begins with the creation of classes and functions required to define the environment, 
+# the walls, the door, interactions between actors, interactions between actors and walls, 
+# the actors themselves, and the simulation. Finally, the simulation is created and visualized, 
+# along with related data.
+
+# Class to configure the simulation environment
+class EnvironmentConfig:
+    def __init__(self, width, height, scale, delay, bg_color, wall_color, heatmap_enabled):
+        self.width = width
+        self.height = height
+        self.scale = scale
+        self.delay = delay
+        self.bg_color = bg_color
+        self.wall_color = wall_color
+        self.heatmap_enabled = heatmap_enabled
+
+# Class for room walls
+class Wall:
+    def __init__(self, x1, y1, x2, y2):
+        self.start = np.array([x1, y1])
+        self.end = np.array([x2, y2])
+
+# Class for the door, specifying its center and width
+class Door:
+    def __init__(self, x, y, width):
+        self.pos = np.array([x, y]) 
+        self.width = width  
+
+# Function to calculate interaction between actors
+def actor_interaction(r_i, r_j, r_i_radius, r_j_radius, v_i, v_j, A=2000, B=0.08, k=120000, kappa=240000): 
+    d_ij = np.linalg.norm(r_i - r_j)  # Distance between the two actors
+    r_ij = r_i_radius + r_j_radius   # Sum of the radii of the two actors
+
+    if d_ij > 0:  # Avoid division by zero
+        n_ij = (r_i - r_j) / d_ij  # Normalized direction of the force
+    else:
+        n_ij = np.array([0.0, 0.0])
+
+    # Normal component 
+    exp_component = A * np.exp((r_ij - d_ij) / B)
+    g = max(0, r_ij - d_ij)
+    normal_force = (exp_component + k * g) * n_ij
+
+    # Tangential component
+    t_ij = np.array([-n_ij[1], n_ij[0]])  # Tangential vector
+    delta_v_t = np.dot((v_j - v_i), t_ij)  # Tangential velocity difference
+    tangential_force = kappa * g * delta_v_t * t_ij
+
+    # The function returns the total interaction force between actors
+    return normal_force + tangential_force 
+
+# Function to calculate interaction with walls
+def wall_interaction(r_i, v_i, wall_start, wall_end, radius, A=2000, B=0.08, k=120000, kappa=240000):
+    wall_vector = wall_end - wall_start
+    wall_length = np.linalg.norm(wall_vector)  # Wall length normalized using numpy
+    wall_direction = wall_vector / wall_length  # Wall direction
+
+    r_to_wall_start = r_i - wall_start
+    projection_length = np.dot(r_to_wall_start, wall_direction)
+    projection = wall_start + projection_length * wall_direction
+
+    # Constrain projection to wall endpoints
+    if projection_length < 0:
+        projection = wall_start
+    elif projection_length > wall_length:
+        projection = wall_end
+
+    # Calculate distance and direction
+    d_iW = np.linalg.norm(projection - r_i)
+    n_iW = (projection - r_i) / d_iW if d_iW > 0 else np.array([0.0, 0.0])
+    t_iW = np.array([-n_iW[1], n_iW[0]])
+
+    # Calculate normal and tangential forces from wall interaction
+    g = max(0, radius - d_iW)
+    normal_force = (A * np.exp((radius - d_iW) / B) + k * g) * n_iW
+    tangential_force = -kappa * g * np.dot(v_i, t_iW) * t_iW
+
+    return normal_force + tangential_force
+
+# Class to create actors
+class Actor:
+    # Create an actor with all its attributes
+    def __init__(self, pos, velocity, desiredSpeed, pathId, mass, radius, atDestination, color, heatmapEnabled):
+        self.pos = np.array(pos)
+        self.velocity = np.array(velocity)
+        self.desired_speed = desiredSpeed
+        self.path_id = pathId
+        self.mass = mass
+        self.radius = radius
+        self.at_destination = atDestination
+        self.color = np.array(color) / 255.0
+        self.heatmap_enabled = heatmapEnabled
+        self.goal = None
+
+    # Set the goal for the actor
+    def set_goal(self, goal):
+        self.goal = np.array(goal)
+
+    # Update the actor's velocity considering interactions with other actors, walls, and the goal
+    def update_velocity(self, other_actors, walls, wall_params):
+        if self.goal is not None:
+            direction = self.goal - self.pos
+            distance = np.linalg.norm(direction)
+            
+            # Normalize direction and calculate velocity toward the goal
+            if distance > 0:
+                direction /= distance
+                goal_velocity = direction * self.desired_speed
+
+            # If the goal is reached, velocity toward the goal is zero
+            else:
+                goal_velocity = np.zeros_like(self.velocity)
+        else:
+            goal_velocity = np.zeros_like(self.velocity)  # No goal, velocity is zero
+
+        # Interaction with other actors
+        interaction_force = np.zeros_like(self.velocity)
+        for other in other_actors:
+            if other != self:  # Avoid self-interaction
+                interaction_force += actor_interaction(
+                    self.pos, other.pos, self.radius, other.radius, self.velocity, other.velocity
+                )
+
+        # Interaction with walls
+        wall_force = np.zeros_like(self.velocity)
+        for wall in walls:
+            wall_force += wall_interaction(self.pos, self.velocity, wall.start, wall.end, self.radius, **wall_params)
+
+        # Update velocity by summing components
+        self.velocity = goal_velocity + interaction_force + wall_force
+
+    # Update position
+    def update_position(self, dt):
+        self.pos += self.velocity * dt
+
+    # Check if the actor has reached the goal (door)
+    def check_goal_reached(self, door, tolerance=0.5):
+        door_x_start = door.pos[0] - door.width / 2
+        door_x_end = door.pos[0] + door.width / 2
+
+        # Check if the actor is within the door width and vertically close enough
+        if door_x_start <= self.pos[0] <= door_x_end and abs(self.pos[1] - door.pos[1]) <= self.radius + tolerance:
+            self.at_destination = True  # Mark as reached destination
+            self.velocity = np.zeros_like(self.velocity)
+
+# Main simulation environment containing walls, actors, paths, and the door
+class Simulation:
+    def __init__(self, config, walls, actors, paths, door):
+        self.config = config
+        self.walls = walls
+        self.actors = actors
+        self.paths = paths
+        self.door = door
+        self.actor_times = {}
+        self.time = 0
+
+    # Execute one simulation step
+    def run_step(self, dt):
+        self.time += dt  # Increment time by dt
+        actors_to_remove = []
+
+        for actor in self.actors:
+            if not actor.at_destination:  # If actor has not reached destination
+                actor.update_velocity(self.actors, self.walls, {"A": 200, "B": 0.008, "k": 120000, "kappa": 240000})
+                actor.update_position(dt)
+                actor.check_goal_reached(self.door)
+
+            if actor.at_destination:  # If destination is reached
+                self.actor_times[actor] = self.time
+                actors_to_remove.append(actor)
+
+        self.actors = [actor for actor in self.actors if actor not in actors_to_remove]
+
+    # Plot the simulation with walls, door, and actors
+    def plot(self, ax):
+        ax.clear()
+        ax.set_xlim(0, self.config.width)
+        ax.set_ylim(0, self.config.height)
+        ax.set_facecolor(np.array(self.config.bg_color) / 255.0)
+        ax.set_aspect('equal', adjustable='box')  # Maintain aspect ratio
+
+        for wall in self.walls:
+            ax.plot([wall.start[0], wall.end[0]], [wall.start[1], wall.end[1]], color=np.array(self.config.wall_color) / 255.0, linewidth=2)
+
+        door_x = self.door.pos[0] - self.door.width / 2
+        ax.add_patch(plt.Rectangle((door_x, self.door.pos[1] - 0.02), self.door.width, 1, color='blue'))
+
+        for actor in self.actors:
+            ax.add_patch(plt.Circle(actor.pos, actor.radius, color=actor.color))
+
+# Function to load simulation data
+def load_simulation(data):
+    config_data = data["config"]
+    room_data = data["room"]
+    actors_data = data["actors"]
+    paths_data = data["paths"]
+    door_data = data.get("door", {"x": 100, "y": 200, "width": 4})
+
+    # Create environment configuration
+    config = EnvironmentConfig(
+        width=config_data["width"],
+        height=config_data["height"],
+        scale=config_data["scale"],
+        delay=config_data["delay"],
+        bg_color=config_data["bgColor"],
+        wall_color=config_data["wallColor"],
+        heatmap_enabled=config_data["heatmapEnabled"]
+    )
+
+    # Create walls, actors, paths, and door
+    walls = [Wall(*wall) for wall in room_data["walls"]]
+    actors = [Actor(**actor) for actor in actors_data]
+    paths = [Path(path["id"], path["checkpoints"]) for path in paths_data]
+    door = Door(door_data["x"], door_data["y"], door_data["width"])
+
+    # Initialize simulation
+    simulation = Simulation(config, walls, actors, paths, door)
+
+    # Set goals for actors
+    for actor in simulation.actors:
+        actor.set_goal(simulation.door.pos)
+
+    return simulation
+
+# Class to define paths for actors
+class Path:
+    def __init__(self, path_id, checkpoints):
+        self.path_id = path_id
+        self.checkpoints = [np.array(c) for c in checkpoints]
+
+# Create actors with valid positions
+actors = []
+radius = 0.25
+min_distance = 3 * radius 
+unique_positions = set()
+
+def is_valid_position(pos, existing_positions, min_distance):
+    for existing_pos in existing_positions:
+        if abs(pos[0] - existing_pos[0]) < min_distance and abs(pos[1] - existing_pos[1]) < min_distance:
+            return False
+    return True
+
+# Generate actors with random but valid positions
+while len(actors) <= 200:
+    new_pos = (round(random.uniform(50, 150), 2), round(random.uniform(100, 190), 2))
+    if is_valid_position(new_pos, unique_positions, min_distance):
+        unique_positions.add(new_pos) 
+        actors.append({
+            "pos": new_pos,
+            "velocity": [1.5, 1.5],
+            "desiredSpeed": 1,
+            "pathId": 0,
+            "mass": 70,
+            "radius": radius,
+            "atDestination": False,
+            "color": [random.randint(0, 255), random.randint(0, 255), random.randint(0, 255)],
+            "heatmapEnabled": True
+        })
+
+# Simulation input data
+input_data = {
+    "config": {
+        "width": 200.5,
+        "height": 200.5,
+        "scale": 10,
+        "delay": 0,
+        "bgColor": [0, 0, 0],
+        "wallColor": [255, 255, 255],
+        "heatmapEnabled": True
+    },
+    "room": {
+        "walls": [
+            [0.5, 0.5, 200, 0.5],
+            [200, 0.5, 200, 200],
+            [200, 200, 102, 200],  
+            [98, 200, 0.5, 200],
+            [0.5, 200, 0.5, 0]
+        ]
+    },
+    
+    # Actors, initially empty paths, and the door are defined here
+    "actors": actors,
+    "paths": [],
+    "door": {
+        "x": 100,
+        "y": 200,
+        "width": 4
+    }
+}
+
+
+
+# Execute the simulation
+simulation = load_simulation(input_data)
+
+fig, ax = plt.subplots()
+
+# Function to update the simulation at each frame
+def update(frame):
+    simulation.run_step(0.1)  # Advance simulation by 0.1 seconds
+    simulation.plot(ax)       # Plot the updated simulation state
+
+    ax.set_xlim(75, 125)  # Set x-axis limits to focus on the door area
+    ax.set_ylim(175, 205) # Set y-axis limits to focus on the door area
+
+# Create an animation object
+ani = animation.FuncAnimation(fig, update, frames=1, interval=10)
+plt.show()
+
+# Collect and display arrival times for actors
+list_arrival_time = []
+for actor, arrival_time in simulation.actor_times.items():
+    print(f"Actor reached the door at time: {arrival_time:.2f} seconds")
+    list_arrival_time.append(arrival_time)
+
+# Plot arrival times
+x_values = list(range(1, len(list_arrival_time) + 1))
+plt.plot(x_values, list_arrival_time, marker='o', linestyle='-', color='b')
+plt.xlabel("Actor Index")
+plt.ylabel("Arrival Time [s]")
+plt.title("Arrival Times of Actors")
+plt.grid(True)
+plt.show()
+
+# Calculate and print the average arrival time
+average_time = np.mean(list_arrival_time)
+print(f"Average arrival time: {average_time:.2f} seconds")
