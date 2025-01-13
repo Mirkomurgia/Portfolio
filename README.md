@@ -1,18 +1,17 @@
-Escape Panic Simulation
+# Escape Panic Simulation
 
-This project is a simulation based on the paper "Simulating dynamical features of escape panic" by Dirk Helbing, Illés Farkas, and Tamás Vicsek. It models a scenario where multiple agents (actors) navigate through a room to exit via a door under specific physical and behavioral constraints.
+This project simulates escape panic dynamics, inspired by the paper *"Simulating dynamical features of escape panic"* by Dirk Helbing, Illés Farkas, and Tamás Vicsek. The simulation models multiple agents (actors) navigating through a room to exit via a door, considering physical and social interactions.
 
-Features
+## Features
 
-Agent Interaction: Simulates physical and social forces between agents.
-Wall Interaction: Models interactions between agents and obstacles (walls).
-Dynamic Goal Setting: Agents are directed towards an exit (door) while avoiding collisions.
-Visualization: Displays the simulation in real-time using matplotlib.
-Configurable Environment: Customizable room dimensions, agent properties, and simulation parameters.
-Prerequisites
-To run the simulation, ensure the following Python libraries are installed:
+- **Agent Interaction**: Models physical and social forces between agents.
+- **Wall Interaction**: Simulates interactions between agents and obstacles (walls).
+- **Dynamic Goal Setting**: Guides agents towards the exit while avoiding collisions.
+- **Visualization**: Displays real-time simulations using `matplotlib`.
+- **Customizable Environment**: Adjustable room size, agent properties, and simulation parameters.
 
-Simulation Process
+
+## Simulation Process
 
 Environment Initialization:
 The room, walls, door, and agents are created based on the input data.
